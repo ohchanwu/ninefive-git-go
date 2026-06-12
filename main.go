@@ -2,12 +2,14 @@ package main
 
 import (
 	"compress/zlib"
+	"crypto/sha1"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"slices"
+	"strconv"
 )
 
 func main() {
@@ -17,10 +19,63 @@ func main() {
 			log.Fatal(err)
 		}
 	case "cat-file":
-		if err := catFile(os.Args[len(os.Args)-1], os.Args[2:len(os.Args)]...); err != nil {
+		sha := os.Args[len(os.Args)-1]
+		flags := os.Args[2:len(os.Args)]
+		if err := catFile(sha, flags...); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
+	case "hash-object":
+		path := os.Args[len(os.Args)-1]
+		if err := hashObject(path); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 		}
 	}
+}
+
+func hashObject(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("error opening file at %s: %w", path, err)
+	}
+	defer f.Close()
+
+	content, err := io.ReadAll(f)
+	if err != nil {
+		return fmt.Errorf("error reading file at %s: %w", path, err)
+	}
+
+	header := "blob " + strconv.Itoa(len(content)) + string(byte(0))
+	store := []byte(header + string(content))
+	h := sha1.New()
+	h.Write(store)
+	sha := fmt.Sprintf("%x", string(h.Sum(nil)))
+
+	fmt.Println(sha)
+
+	// If no "-w" flag is present, do not create a blob object
+	// and write the file's compressed contents to it.
+	if len(os.Args) == 3 {
+		return nil
+	}
+
+	objDir := fmt.Sprintf(".git/objects/%s/", sha[0:2])
+	objPath := fmt.Sprintf(".git/objects/%s/%s", sha[0:2], sha[2:])
+	if err := os.Mkdir(objDir, os.FileMode(0o644)); err != nil {
+		return fmt.Errorf("error creating blob dir at %s, %w", objDir, err)
+	}
+	blobFile, err := os.OpenFile(objPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(0o644))
+	if err != nil {
+		return fmt.Errorf("error creating blob file at %s, %w", objPath, err)
+	}
+	defer blobFile.Close()
+
+	zlibWriter := zlib.NewWriter(blobFile)
+	defer zlibWriter.Close()
+	if _, err := zlibWriter.Write(store); err != nil {
+		return fmt.Errorf("error writing to blob at %s: %w", objPath, err)
+	}
+
+	return nil
 }
 
 func catFile(sha string, flags ...string) error {
@@ -41,6 +96,9 @@ func catFile(sha string, flags ...string) error {
 	}
 	defer zlibReader.Close()
 
+	// load the object's contents into memory
+	// not the best idea if the object is very large
+	// so may have to refactor this part
 	bytes, err := io.ReadAll(zlibReader)
 	if err != nil {
 		return fmt.Errorf("error reading decompressed content: %w", err)
