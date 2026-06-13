@@ -10,6 +10,7 @@ import (
 	"os"
 	"slices"
 	"strconv"
+	"strings"
 )
 
 func main() {
@@ -19,17 +20,53 @@ func main() {
 			log.Fatal(err)
 		}
 	case "cat-file":
-		sha := os.Args[len(os.Args)-1]
-		flags := os.Args[2:len(os.Args)]
-		if err := catFile(sha, flags...); err != nil {
+		if err := catFile(os.Args[len(os.Args)-1]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 		}
 	case "hash-object":
-		path := os.Args[len(os.Args)-1]
-		if err := hashObject(path); err != nil {
+		if err := hashObject(os.Args[len(os.Args)-1]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
+	case "ls-tree":
+		if err := lsTree(os.Args[len(os.Args)-1]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 		}
 	}
+}
+
+func lsTree(sha string) error {
+	path := fmt.Sprintf(".git/objects/%s/%s", sha[:2], sha[2:])
+	f, err := os.OpenFile(path, os.O_RDONLY, os.FileMode(0o0644))
+	if err != nil {
+		return fmt.Errorf("error opening tree at %s: %w", path, err)
+	}
+	defer f.Close()
+
+	reader, err := zlib.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("error creating zlib reader: %w", err)
+	}
+	defer reader.Close()
+
+	bytes, err := io.ReadAll(reader)
+	if err != nil {
+		return fmt.Errorf("error reading decompressed content: %w", err)
+	}
+
+	// strip tree header
+	content := bytes[slices.Index(bytes, 0x00)+1:]
+
+	for entry := range strings.SplitAfterSeq(string(content), " ") {
+		if name, _, found := strings.Cut(entry, string(byte(0))); found {
+			fmt.Println(name)
+		}
+	}
+
+	if slices.Contains(os.Args[2:len(os.Args)-1], "--name-only") {
+		return nil
+	}
+
+	return nil
 }
 
 func hashObject(path string) error {
@@ -58,8 +95,8 @@ func hashObject(path string) error {
 		return nil
 	}
 
-	objDir := fmt.Sprintf(".git/objects/%s/", sha[0:2])
-	objPath := fmt.Sprintf(".git/objects/%s/%s", sha[0:2], sha[2:])
+	objDir := fmt.Sprintf(".git/objects/%s/", sha[:2])
+	objPath := fmt.Sprintf(".git/objects/%s/%s", sha[:2], sha[2:])
 	if err := os.Mkdir(objDir, os.FileMode(0o644)); err != nil {
 		return fmt.Errorf("error creating blob dir at %s, %w", objDir, err)
 	}
@@ -78,12 +115,12 @@ func hashObject(path string) error {
 	return nil
 }
 
-func catFile(sha string, flags ...string) error {
+func catFile(sha string) error {
 	if len(sha) != 40 {
 		return errors.New("SHA must be 40 characters long")
 	}
 
-	path := fmt.Sprintf(".git/objects/%s/%s", sha[0:2], sha[2:])
+	path := fmt.Sprintf(".git/objects/%s/%s", sha[:2], sha[2:])
 	f, err := os.OpenFile(path, os.O_RDWR, os.FileMode(0o644))
 	if err != nil {
 		return fmt.Errorf("error opening file at %s: %w", path, err)
